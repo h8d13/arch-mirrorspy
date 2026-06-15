@@ -154,7 +154,8 @@ def main(argv=None):
         seed(conn)
     if args.import_urls:
         n = importer.import_from_feed(conn, args.feed_url)
-        print(f'imported {n} mirror URLs from {args.feed_url}')
+        total = conn.execute('SELECT COUNT(*) AS c FROM mirrors_mirrorurl').fetchone()['c']
+        print(f'imported {n} new mirror URLs ({total} total) from {args.feed_url}')
     if args.check:
         n = checker.run(conn, timeout=args.timeout, num_threads=args.threads, limit=args.limit)
         print(f'polled {n} mirrors, wrote {n} MirrorLog rows')

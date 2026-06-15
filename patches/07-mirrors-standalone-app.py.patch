@@ -1,9 +1,9 @@
 diff --git a/mirrors/standalone/app.py b/mirrors/standalone/app.py
 new file mode 100644
-index 0000000..ab22f43
+index 0000000..d325451
 --- /dev/null
 +++ b/mirrors/standalone/app.py
-@@ -0,0 +1,184 @@
+@@ -0,0 +1,185 @@
 +"""Stdlib HTTP server + CLI for the Django-free mirrors JSON API.
 +
 +Routes (mirroring archweb URLs):
@@ -160,7 +160,8 @@ index 0000000..ab22f43
 +        seed(conn)
 +    if args.import_urls:
 +        n = importer.import_from_feed(conn, args.feed_url)
-+        print(f'imported {n} mirror URLs from {args.feed_url}')
++        total = conn.execute('SELECT COUNT(*) AS c FROM mirrors_mirrorurl').fetchone()['c']
++        print(f'imported {n} new mirror URLs ({total} total) from {args.feed_url}')
 +    if args.check:
 +        n = checker.run(conn, timeout=args.timeout, num_threads=args.threads, limit=args.limit)
 +        print(f'polled {n} mirrors, wrote {n} MirrorLog rows')
