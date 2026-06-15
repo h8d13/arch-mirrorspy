@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Regenerate one patch per file for the standalone mirrors API into patches/.
+# Uses `git diff --no-index` so each patch is the file's full content as an
+# addition, independent of whether the file is tracked/committed.
+set -euo pipefail
+cd "$(dirname "$0")"
+
+OUT=patches
+
+# Read/apply order: schema + leaf modules before the CLI that imports them.
+files=(
+  ".gitlab-ci.yml"
+  "mirrors/standalone/__init__.py"
+  "mirrors/standalone/schema.sql"
+  "mirrors/standalone/countries.py"
+  "mirrors/standalone/core.py"
+  "mirrors/standalone/importer.py"
+  "mirrors/standalone/checker.py"
+  "mirrors/standalone/app.py"
+  "mirrors/standalone/reference/api.py"
+  "mirrors/standalone/reference/utils.py"
+  "mirrors/standalone/reference/models.py"
+)
+
+rm -rf "$OUT"
+mkdir -p "$OUT"
+
+i=1
+for f in "${files[@]}"; do
+    base=$(printf '%s' "$f" | tr '/' '-' | sed 's/^\.//')
+    out=$(printf '%s/%02d-%s.patch' "$OUT" "$i" "$base")
+    # --no-index exits 1 when files differ (always, vs /dev/null); ignore it.
+    git diff --no-index -- /dev/null "$f" > "$out" || true
+    printf '%s\n' "$out"
+    i=$((i + 1))
+done

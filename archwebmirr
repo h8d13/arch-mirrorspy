@@ -1,0 +1,34 @@
+#!/bin/bash
+command -v git >/dev/null || { echo "git not found" >&2; exit 1; }
+
+base=$(pwd)
+rm -rf "$base/archweb"
+
+git clone --filter=tree:0 --sparse https://github.com/archlinux/archweb || exit 1
+cd archweb || exit 1
+git sparse-checkout set mirrors || exit 1
+cd "$base" || exit 1
+
+# Refresh the upstream tree without clobbering our tracked mirrors/standalone/.
+# Stash it aside (if present), swap in the fresh upstream mirrors/, restore it.
+had_standalone=0
+if [ -d "$base/mirrors/standalone" ]; then
+    had_standalone=1
+    rm -rf "$base/.standalone.bak"
+    mv "$base/mirrors/standalone" "$base/.standalone.bak" || exit 1
+fi
+rm -rf "$base/mirrors"
+mv "$base/archweb/mirrors" "$base/mirrors" || exit 1
+rm -rf "$base/archweb"
+if [ "$had_standalone" -eq 1 ]; then
+    mv "$base/.standalone.bak" "$base/mirrors/standalone" || exit 1
+fi
+
+# Consumer bootstrap only: no tracked standalone/ present, so build it (and the
+# CI file) from patches/. In this repo standalone/ is tracked, so this is skipped.
+if [ "$had_standalone" -eq 0 ] && [ -d "$base/patches" ]; then
+    for p in "$base"/patches/*.patch; do
+        [ -e "$p" ] || break
+        git apply "$p" || { echo "failed to apply $p" >&2; exit 1; }
+    done
+fi

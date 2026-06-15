@@ -1,0 +1,31 @@
+# Polls every active mirror and accumulates MirrorLog rows, mirroring
+# archweb's `mirrorcheck` cadence (~14.4 min; 100 checks across the 24h
+# status cutoff).
+stages:
+  - check
+
+mirror-check:
+  stage: check
+  image: python:3.12-slim
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+  variables:
+    MIRRORS_DB: mirrors.db
+  cache:
+    # Stable key so the DB (and its log history) survives across scheduled
+    # runs on the same runner. Artifacts below are the durable fallback.
+    key: mirrors-db
+    paths:
+      - mirrors.db
+  before_script:
+    - apt-get update && apt-get install -y --no-install-recommends rsync
+  script:
+    # idempotent: re-seeds any new URLs the feed has gained (INSERT OR IGNORE)
+    - python -m mirrors.standalone.app --db "$MIRRORS_DB" --init --import-urls
+    - python -m mirrors.standalone.app --db "$MIRRORS_DB" --check --timeout 12 --threads 10
+    - python -m mirrors.standalone.app --db "$MIRRORS_DB" --dump public
+  artifacts:
+    paths:
+      - public/status.json      # the produced JSON, downloadable per pipeline
+      - mirrors.db              # log history (also kept in cache)
+    expire_in: 7 days

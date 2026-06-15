@@ -1,3 +1,5 @@
 __pycache__/
-mirrors.json
-mirrorlist
+# Upstream archweb source is disposable (refetched by archwebmirrs),
+# but our own code under mirrors/standalone/ is tracked.
+mirrors/*
+!mirrors/standalone/

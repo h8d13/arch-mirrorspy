@@ -1,0 +1,12 @@
+diff --git a/mirrors/standalone/__init__.py b/mirrors/standalone/__init__.py
+new file mode 100644
+index 0000000..6ab51f2
+--- /dev/null
++++ b/mirrors/standalone/__init__.py
+@@ -0,0 +1,6 @@
++"""Django-free reimplementation of the mirrors JSON API.
++
++Reads the same SQLite schema as the Django app (table names match
++Django's `mirrors_*` convention) and serves the three public JSON
++endpoints with no Django, django_countries, or main.utils dependency.
++"""

@@ -1,0 +1,205 @@
+diff --git a/mirrors/standalone/checker.py b/mirrors/standalone/checker.py
+new file mode 100644
+index 0000000..bd5daa8
+--- /dev/null
++++ b/mirrors/standalone/checker.py
+@@ -0,0 +1,199 @@
++"""Django-free port of archweb's `mirrorcheck` management command.
++
++Polls every active mirror URL's `lastsync` file, records how long the
++fetch took and the reported sync time, and writes MirrorLog rows. The
++aggregation in core.get_mirror_statuses turns accumulated logs into the
++status JSON, so meaningful duration_stddev / completion_pct require
++several runs over time (one run = one log per URL).
++
++HTTP/HTTPS/FTP go through urllib; rsync shells out to the rsync binary.
++"""
++
++import os
++import re
++import socket
++import ssl
++import subprocess
++import tempfile
++import time
++import urllib.error
++import urllib.request
++from datetime import datetime, timedelta, timezone
++from http.client import HTTPException
++from queue import Empty, Queue
++from threading import Thread
++
++from . import core
++
++USER_AGENT = 'mirrors-standalone/1.0'
++RETENTION_DAYS = 365
++
++
++def parse_lastsync(data):
++    """lastsync holds an epoch value; return (last_sync, error, is_success)."""
++    try:
++        ts = int(data)
++    except (TypeError, ValueError):
++        return None, 'Could not parse time from lastsync', False
++    synced = datetime.fromtimestamp(ts, tz=timezone.utc).replace(tzinfo=None)
++    return synced, '', True
++
++
++def _new_log(url_row):
++    return {
++        'url_id': url_row['id'],
++        'location_id': None,
++        'check_time': core.utcnow(),
++        'last_sync': None,
++        'duration': None,
++        'is_success': True,
++        'error': '',
++    }
++
++
++def check_http_url(url_row, timeout):
++    """Port of check_mirror_url: fetch <url>lastsync over HTTP/FTP."""
++    log = _new_log(url_row)
++    target = url_row['url'] + 'lastsync'
++    req = urllib.request.Request(target, None, {'User-Agent': USER_AGENT})
++    start = time.time()
++    try:
++        result = urllib.request.urlopen(req, timeout=timeout)
++        data = result.read()
++        result.close()
++        log['duration'] = time.time() - start
++        log['last_sync'], log['error'], log['is_success'] = parse_lastsync(data)
++    except urllib.error.HTTPError as e:
++        if e.code == 404:
++            log['duration'] = time.time() - start  # have a duration, not a success
++        log['is_success'] = False
++        log['error'] = str(e)
++    except urllib.error.URLError as e:
++        log['is_success'] = False
++        log['error'] = str(e.reason)
++        if isinstance(e.reason, str) and re.search(r'550.*No such file', e.reason):
++            log['duration'] = time.time() - start
++        if isinstance(e.reason, socket.timeout):
++            log['error'] = 'Connection timed out.'
++        elif isinstance(e.reason, socket.error):
++            log['error'] = str(e.reason.args[-1])
++    except HTTPException:
++        log['is_success'] = False
++        log['error'] = 'Exception in processing HTTP request.'
++    except ssl.CertificateError as e:
++        log['is_success'] = False
++        log['error'] = str(e)
++    except TimeoutError:
++        log['is_success'] = False
++        log['error'] = 'Connection timed out.'
++    except OSError as e:
++        log['is_success'] = False
++        log['error'] = str(e)
++    return log
++
++
++def check_rsync_url(url_row, timeout):
++    """Port of check_rsync_url: rsync the lastsync file to a tempdir."""
++    log = _new_log(url_row)
++    target = url_row['url'] + 'lastsync'
++    tempdir = tempfile.mkdtemp()
++    lastsync_path = os.path.join(tempdir, 'lastsync')
++    rsync_cmd = ['rsync', '--quiet', '--contimeout=%d' % timeout,
++                 '--timeout=%d' % timeout, target, lastsync_path]
++    proc_timeout = timeout + 5  # buffer so we catch rsync's own timeout first
++    timeout_expired = False
++    errdata = b''
++    try:
++        with open(os.devnull, 'w') as devnull:
++            start = time.time()
++            try:
++                proc = subprocess.Popen(rsync_cmd, stdout=devnull, stderr=subprocess.PIPE)
++                _, errdata = proc.communicate(timeout=proc_timeout)
++                log['duration'] = time.time() - start
++            except subprocess.TimeoutExpired:
++                timeout_expired = True
++                proc.kill()
++                log['is_success'] = False
++                log['error'] = f'rsync subprocess killed after {proc_timeout} seconds'
++
++        if not timeout_expired and proc.returncode != 0:
++            log['is_success'] = False
++            log['error'] = errdata.strip().decode('utf-8', 'replace')
++            if proc.returncode in (1, 30, 35):
++                log['duration'] = None  # command error/timeout: duration misleading
++        elif not timeout_expired:
++            if os.path.exists(lastsync_path):
++                with open(lastsync_path) as fh:
++                    log['last_sync'], log['error'], log['is_success'] = parse_lastsync(fh.read())
++            else:
++                log['last_sync'], log['error'], log['is_success'] = parse_lastsync(None)
++    finally:
++        if os.path.exists(lastsync_path):
++            os.unlink(lastsync_path)
++        os.rmdir(tempdir)
++    return log
++
++
++def _check_one(url_row, timeout):
++    if url_row['protocol'] == 'rsync':
++        return check_rsync_url(url_row, timeout)
++    return check_http_url(url_row, timeout)
++
++
++def _worker(work, output, timeout):
++    while True:
++        try:
++            url_row = work.get(block=False)
++        except Empty:
++            return
++        try:
++            output.append(_check_one(url_row, timeout))
++        finally:
++            work.task_done()
++
++
++def _active_urls(conn, limit=None):
++    sql = """
++SELECT u.id, u.url, p.protocol
++FROM mirrors_mirrorurl u
++JOIN mirrors_mirror m ON m.id = u.mirror_id
++JOIN mirrors_mirrorprotocol p ON p.id = u.protocol_id
++WHERE u.active = 1 AND m.active = 1 AND m.public = 1
++ORDER BY u.id
++"""
++    if limit:
++        sql += f'LIMIT {int(limit)}'
++    return conn.execute(sql).fetchall()
++
++
++def run(conn, timeout=10.0, num_threads=10, limit=None):
++    """Poll active mirrors and persist one MirrorLog per URL. Returns count."""
++    urls = _active_urls(conn, limit)
++    work = Queue()
++    for row in urls:
++        work.put(row)
++    logs = []
++    threads = [Thread(target=_worker, args=(work, logs, timeout), daemon=True)
++               for _ in range(min(num_threads, max(1, len(urls))))]
++    for t in threads:
++        t.start()
++    work.join()
++
++    conn.executemany(
++        'INSERT INTO mirrors_mirrorlog '
++        '(check_time, last_sync, duration, is_success, error, location_id, url_id) '
++        'VALUES (?, ?, ?, ?, ?, ?, ?)',
++        [(core.fmt(log['check_time']),
++          core.fmt(log['last_sync']) if log['last_sync'] else None,
++          log['duration'], int(log['is_success']), log['error'],
++          log['location_id'], log['url_id']) for log in logs])
++    conn.commit()
++    return len(logs)
++
++
++def cleanup(conn, days=RETENTION_DAYS):
++    """Drop MirrorLog rows older than the retention window."""
++    cutoff = core.fmt(core.utcnow() - timedelta(days=days))
++    cur = conn.execute('DELETE FROM mirrors_mirrorlog WHERE check_time < ?', (cutoff,))
++    conn.commit()
++    return cur.rowcount

@@ -1,0 +1,90 @@
+"""Seed the mirror URL list from the live archweb status feed.
+
+The feed is pre-aggregated (no per-check logs), so we use it only to
+populate Mirror / MirrorProtocol / MirrorUrl rows. The actual stats are
+then produced locally by checker.py polling each mirror's lastsync file.
+
+Mirror name and URL primary key are recovered from each entry's `details`
+link (e.g. https://archlinux.org/mirrors/<name>/<pk>/), so the rows line
+up with upstream ids.
+"""
+
+import json
+import urllib.request
+
+from . import core
+
+FEED_URL = 'https://archlinux.org/mirrors/status/json/'
+
+
+def fetch_feed(url=FEED_URL, timeout=30):
+    req = urllib.request.Request(url, headers={'User-Agent': 'mirrors-standalone/1.0'})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.load(resp)
+
+
+def _parse_details(details):
+    """'https://host/mirrors/<name>/<pk>/' -> (name, pk) or (None, None)."""
+    try:
+        tail = details.split('/mirrors/', 1)[1]
+        name, pk, _ = tail.split('/', 2)
+        return name, int(pk)
+    except (IndexError, ValueError):
+        return None, None
+
+
+def import_mirror_urls(conn, payload):
+    """Upsert Mirror/MirrorProtocol/MirrorUrl rows from a status payload.
+
+    Returns the number of MirrorUrl rows written. Idempotent: re-running
+    against the same feed leaves the row set unchanged.
+    """
+    now = core.fmt(core.utcnow())
+    cur = conn.cursor()
+    protocols = {}
+    mirrors = {}
+    written = 0
+
+    for entry in payload.get('urls', []):
+        name, pk = _parse_details(entry.get('details', ''))
+        if name is None:
+            continue
+
+        proto = entry['protocol']
+        if proto not in protocols:
+            is_download = proto in ('http', 'https', 'ftp')
+            default = proto in ('http', 'https')
+            cur.execute(
+                'INSERT OR IGNORE INTO mirrors_mirrorprotocol '
+                '(protocol, is_download, "default", created) VALUES (?, ?, ?, ?)',
+                (proto, int(is_download), int(default), now))
+            protocols[proto] = cur.execute(
+                'SELECT id FROM mirrors_mirrorprotocol WHERE protocol = ?',
+                (proto,)).fetchone()['id']
+
+        if name not in mirrors:
+            # tier is not in the status feed; default to 2 (untiered-ish).
+            cur.execute(
+                'INSERT OR IGNORE INTO mirrors_mirror '
+                '(name, tier, public, active, isos, created, last_modified) '
+                'VALUES (?, 2, 1, 1, ?, ?, ?)',
+                (name, int(bool(entry.get('isos', True))), now, now))
+            mirrors[name] = cur.execute(
+                'SELECT id FROM mirrors_mirror WHERE name = ?', (name,)).fetchone()['id']
+
+        cur.execute(
+            'INSERT OR IGNORE INTO mirrors_mirrorurl '
+            '(id, url, country, has_ipv4, has_ipv6, created, active, mirror_id, protocol_id) '
+            'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            (pk, entry['url'], entry.get('country_code', ''),
+             int(bool(entry.get('ipv4'))), int(bool(entry.get('ipv6'))),
+             now, int(bool(entry.get('active', True))),
+             mirrors[name], protocols[proto]))
+        written += cur.rowcount
+
+    conn.commit()
+    return written
+
+
+def import_from_feed(conn, url=FEED_URL):
+    return import_mirror_urls(conn, fetch_feed(url))
