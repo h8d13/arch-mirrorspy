@@ -9,7 +9,6 @@ OUT=patches
 
 # Read/apply order: schema + leaf modules before the CLI that imports them.
 files=(
-  ".github/workflows/mirror-check.yml"
   "mirrors/standalone/__init__.py"
   "mirrors/standalone/schema.sql"
   "mirrors/standalone/countries.py"

@@ -8,6 +8,8 @@ on:
     # GitHub coalesces/delays scheduled runs under load; ~15 min is best-effort.
     - cron: '*/15 * * * *'
   workflow_dispatch: {}   # manual "Run workflow" button
+  push:
+    branches: [master]    # run on every push to master (drop once schedule is verified)
 
 # One run at a time; a slow poll shouldn't stack on the next tick.
 concurrency:
