@@ -41,7 +41,7 @@ jobs:
       - name: Import URLs, poll, dump JSON
         run: |
           python -m mirrors.standalone.app --db mirrors.db --init --import-urls
-          python -m mirrors.standalone.app --db mirrors.db --check --timeout 12 --threads 10
+          python -m mirrors.standalone.app --db mirrors.db --check --timeout 12 --threads 40
           python -m mirrors.standalone.app --db mirrors.db --dump public
 
       - name: Upload status.json
