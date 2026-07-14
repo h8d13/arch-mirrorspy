@@ -1,6 +1,6 @@
 diff --git a/mirrors/standalone/importer.py b/mirrors/standalone/importer.py
 new file mode 100644
-index 0000000..74663d5
+index 0000000..e1c6be5
 --- /dev/null
 +++ b/mirrors/standalone/importer.py
 @@ -0,0 +1,108 @@
@@ -110,5 +110,5 @@ index 0000000..74663d5
 +        try:
 +            return url, import_from_feed(conn, url)
 +        except (OSError, ValueError) as exc:
-+            errors.append(f'{url}: {exc}')
++            errors.append(f'{url} ({exc})')
 +    raise FeedUnavailable('; '.join(errors))

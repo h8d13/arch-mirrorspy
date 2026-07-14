@@ -104,5 +104,5 @@ def import_from_feeds(conn, urls):
         try:
             return url, import_from_feed(conn, url)
         except (OSError, ValueError) as exc:
-            errors.append(f'{url}: {exc}')
+            errors.append(f'{url} ({exc})')
     raise FeedUnavailable('; '.join(errors))
