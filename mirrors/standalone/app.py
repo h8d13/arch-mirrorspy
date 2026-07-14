@@ -135,7 +135,9 @@ def main(argv=None):
     p.add_argument('--seed', action='store_true', help='insert sample data')
     p.add_argument('--import-urls', dest='import_urls', action='store_true',
                    help='seed mirror URLs from the live archweb feed')
-    p.add_argument('--feed-url', default=importer.FEED_URL, help='status feed to import')
+    p.add_argument('--feed-url', dest='feed_urls', action='append', metavar='URL',
+                   help='status feed to import; repeatable, tried in order '
+                        f'(default: {importer.FEED_URL})')
     p.add_argument('--check', action='store_true',
                    help='poll active mirrors once and store MirrorLog rows')
     p.add_argument('--timeout', type=float, default=10.0, help='per-mirror timeout (s)')
@@ -153,9 +155,20 @@ def main(argv=None):
     if args.seed:
         seed(conn)
     if args.import_urls:
-        n = importer.import_from_feed(conn, args.feed_url)
-        total = conn.execute('SELECT COUNT(*) AS c FROM mirrors_mirrorurl').fetchone()['c']
-        print(f'imported {n} new mirror URLs ({total} total) from {args.feed_url}')
+        feeds = args.feed_urls or [importer.FEED_URL]
+        try:
+            url, n = importer.import_from_feeds(conn, feeds)
+            total = conn.execute(
+                'SELECT COUNT(*) AS c FROM mirrors_mirrorurl').fetchone()['c']
+            print(f'imported {n} new mirror URLs ({total} total) from {url}')
+        except importer.FeedUnavailable as exc:
+            # Feeds down but a previous import is in the DB: keep going
+            # with the known URL set instead of failing the whole run.
+            total = conn.execute(
+                'SELECT COUNT(*) AS c FROM mirrors_mirrorurl').fetchone()['c']
+            if total == 0:
+                raise SystemExit(f'no feed reachable and no stored mirror URLs: {exc}')
+            print(f'feeds unreachable ({exc}); re-using {total} stored mirror URLs')
     if args.check:
         n = checker.run(conn, timeout=args.timeout, num_threads=args.threads, limit=args.limit)
         print(f'polled {n} mirrors, wrote {n} MirrorLog rows')

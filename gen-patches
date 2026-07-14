@@ -19,6 +19,7 @@ files=(
   "mirrors/standalone/reference/api.py"
   "mirrors/standalone/reference/utils.py"
   "mirrors/standalone/reference/models.py"
+  ".github/workflows/mirror-check.yml"
 )
 
 rm -rf "$OUT"

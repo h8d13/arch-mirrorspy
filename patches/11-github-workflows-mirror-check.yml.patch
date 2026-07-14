@@ -1,0 +1,82 @@
+diff --git a/.github/workflows/mirror-check.yml b/.github/workflows/mirror-check.yml
+new file mode 100644
+index 0000000..680ecda
+--- /dev/null
++++ b/.github/workflows/mirror-check.yml
+@@ -0,0 +1,76 @@
++# Polls every active mirror and accumulates MirrorLog rows, mirroring
++# archweb's `mirrorcheck` cadence (~14.4 min; 100 checks across the 24h
++# status cutoff). Runs on a schedule and produces public/status.json.
++name: mirror-check
++
++on:
++  schedule:
++    # GitHub coalesces/delays scheduled runs under load; ~15 min is best-effort.
++    - cron: '*/15 * * * *'
++  workflow_dispatch: {}   # manual "Run workflow" button
++  push:
++    branches: [master]    # run on every push to master (drop once schedule is verified)
++
++# One run at a time; a slow poll shouldn't stack on the next tick.
++concurrency:
++  group: mirror-check
++  cancel-in-progress: false
++
++# gh release create/edit/upload on the rolling mirror-status tag.
++permissions:
++  contents: write
++
++jobs:
++  mirror-check:
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@v4
++
++      - uses: actions/setup-python@v5
++        with:
++          python-version: '3.12'
++
++      - name: Ensure rsync
++        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends rsync
++
++      # Rolling cache so the log history (and thus stddev) accumulates across
++      # runs: each run saves under a unique key and restores the latest prior.
++      - name: Restore mirror DB
++        uses: actions/cache@v4
++        with:
++          path: mirrors.db
++          key: mirrors-db-${{ github.run_id }}
++          restore-keys: mirrors-db-
++
++      # Fallback order: live archweb feed, then our own last published
++      # status.json (same shape, round-trips through the importer), then
++      # whatever URL set the cached DB already holds.
++      - name: Import URLs, poll, dump JSON
++        run: |
++          python -m mirrors.standalone.app --db mirrors.db --init --import-urls \
++            --feed-url https://archlinux.org/mirrors/status/json/ \
++            --feed-url https://github.com/${{ github.repository }}/releases/download/mirror-status/status.json
++          python -m mirrors.standalone.app --db mirrors.db --check --timeout 12 --threads 40
++          python -m mirrors.standalone.app --db mirrors.db --dump public
++
++      - name: Upload status.json
++        uses: actions/upload-artifact@v4
++        with:
++          name: mirror-status
++          path: public/status.json
++          retention-days: 7
++
++      # Rolling release: stable download URL for consumers (and the
++      # fallback feed above), notes carry the last run timestamp.
++      - name: Publish release asset
++        env:
++          GH_TOKEN: ${{ github.token }}
++        run: |
++          ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
++          if ! gh release view mirror-status --json tagName; then
++            gh release create mirror-status --title 'mirror status' \
++              --notes "last run: $ts" public/status.json
++          else
++            gh release edit mirror-status --notes "last run: $ts"
++            gh release upload mirror-status public/status.json --clobber
++          fi

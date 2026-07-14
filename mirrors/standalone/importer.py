@@ -17,6 +17,10 @@ from . import core
 FEED_URL = 'https://archlinux.org/mirrors/status/json/'
 
 
+class FeedUnavailable(Exception):
+    """Every candidate feed failed to fetch or parse."""
+
+
 def fetch_feed(url=FEED_URL, timeout=30):
     req = urllib.request.Request(url, headers={'User-Agent': 'mirrors-standalone/1.0'})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -88,3 +92,17 @@ def import_mirror_urls(conn, payload):
 
 def import_from_feed(conn, url=FEED_URL):
     return import_mirror_urls(conn, fetch_feed(url))
+
+
+def import_from_feeds(conn, urls):
+    """Import from the first feed that answers; (url, written) on success.
+
+    URLError is OSError, socket timeouts too; bad JSON is ValueError.
+    """
+    errors = []
+    for url in urls:
+        try:
+            return url, import_from_feed(conn, url)
+        except (OSError, ValueError) as exc:
+            errors.append(f'{url}: {exc}')
+    raise FeedUnavailable('; '.join(errors))
